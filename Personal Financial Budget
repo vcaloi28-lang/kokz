@@ -1,0 +1,941 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Personal Finance Tracker and Budget App</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Firebase Imports and All Application Logic Merged into a Single Module -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, addDoc, onSnapshot, collection, query, orderBy, serverTimestamp, setLogLevel, deleteDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global environment variables
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let app, db, auth;
+        let userId = null;
+        
+        // --- PAYROLL CONSTANTS ---
+        const ND_RATE_DAILY = 725.00;
+        const NORMAL_RATE_DAILY = 695.00;
+        const HOURS_PER_DAY = 8;
+        const JAFRA_COOP_DEDUCTION = 250.00; 
+        
+        // Compute the precise hourly rates
+        const ND_RATE_PER_HOUR = ND_RATE_DAILY / HOURS_PER_DAY; // 90.625
+        const NORMAL_RATE_PER_HOUR = NORMAL_RATE_DAILY / HOURS_PER_DAY; // 86.875
+        
+        // --- EXPENSE CONSTANTS ---
+        const FOOD_RATE_PER_DAY = 40;
+        const TRANSPORTATION_RATE_PER_DAY = 30;
+        const monthNames = ["January", "February", "March", "April", "May", "June", 
+                            "July", "August", "September", "October", "November", "December"];
+        
+        // --- DYNAMIC STATE ---
+        let currentCalculation = null;
+        let expenseRecords = []; // Stores all fetched expense documents
+        let totalExpenses = 0;   // Stores the current sum of expenses
+        let selectedMonthIndex = new Date().getMonth(); // Default to current month index
+        
+        // Set log level for debugging
+        setLogLevel('Debug');
+
+        // --- UTILITY FUNCTIONS ---
+
+        /**
+         * Formats a number to a currency string (₱0,000.00).
+         */
+        const formatCurrency = (amount) => {
+            return new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP' }).format(amount);
+        };
+
+        /**
+         * Formats a Firebase Timestamp object into a readable date string.
+         */
+        const formatDate = (timestamp) => {
+            if (!timestamp || !timestamp.toDate) return 'N/A';
+            return timestamp.toDate().toLocaleString('en-US', { 
+                year: 'numeric', month: 'short', day: 'numeric', 
+                hour: '2-digit', minute: '2-digit' 
+            });
+        };
+
+        /**
+         * Updates the display header for the expenses section based on the selected month.
+         */
+        function updateMonthLabel() {
+            const selectedMonthName = monthNames[selectedMonthIndex];
+            // Displaying month name + " Expenses" for dynamic label
+            document.getElementById('expenses-header-title').textContent = `${selectedMonthName} Expenses`;
+        }
+
+        /**
+         * Handles the change event for the month selector.
+         */
+        function handleMonthChange() {
+            const select = document.getElementById('monthSelector');
+            selectedMonthIndex = parseInt(select.value, 10);
+            updateMonthLabel();
+        }
+        
+        // --- PAYROLL CALCULATION LOGIC ---
+
+        /**
+         * Populates the current calculation table and updates the global currentCalculation object.
+         * @param {number} ndHours - Night Differential Hours.
+         * @param {number} normalHours - Normal Days Hours.
+         */
+        function populateCurrentCalculation(ndHours, normalHours) {
+            const tableBody = document.getElementById('current-calculation-body');
+            // Elements in the new Financial Summary Box
+            const grossEarningsEl = document.getElementById('current-gross-earnings');
+            const expensesEl = document.getElementById('current-total-expenses');
+            const netEarningsEl = document.getElementById('current-net-earnings');
+            
+            const saveBtn = document.getElementById('save-button');
+            
+            tableBody.innerHTML = ''; // Clear existing rows
+            
+            const ndEarnings = ndHours * ND_RATE_PER_HOUR;
+            const normalEarnings = normalHours * NORMAL_RATE_PER_HOUR;
+            const grandTotalHours = ndHours + normalHours;
+            const grandTotalEarnings = ndEarnings + normalEarnings; // GROSS PAY
+            
+            // Deductions include fixed JAFRA COOP and variable totalExpenses
+            const totalDeductions = totalExpenses + JAFRA_COOP_DEDUCTION;
+            const netPay = grandTotalEarnings - totalDeductions; // NET PAY
+
+            // Update the global calculation object
+            currentCalculation = {
+                ndHours: ndHours,
+                normalHours: normalHours,
+                grossEarnings: grandTotalEarnings,
+                expenses: totalExpenses,
+                jafraCoopDeduction: JAFRA_COOP_DEDUCTION, 
+                netPay: netPay
+            };
+
+            // Table Rows (Detail)
+            const data = [
+                { category: 'Night Differential', rate: ND_RATE_PER_HOUR, hours: ndHours, earnings: ndEarnings },
+                { category: 'Normal Days', rate: NORMAL_RATE_PER_HOUR, hours: normalHours, earnings: normalEarnings }
+            ];
+
+            data.forEach(item => {
+                const row = `
+                    <tr class="${item.category.includes('Differential') ? 'hover:bg-green-50' : 'hover:bg-blue-50'}">
+                        <td class="p-3 font-semibold">${item.category}</td>
+                        <td class="p-3 text-right">${item.hours.toFixed(0)}</td>
+                        <td class="p-3 text-right">${formatCurrency(item.rate)}</td>
+                        <td class="p-3 text-right font-medium">${formatCurrency(item.earnings)}</td>
+                    </tr>
+                `;
+                tableBody.innerHTML += row;
+            });
+
+            // Update Financial Summary Box
+            grossEarningsEl.textContent = formatCurrency(grandTotalEarnings);
+            expensesEl.textContent = formatCurrency(totalExpenses);
+            netEarningsEl.textContent = formatCurrency(netPay);
+            
+            // Update Hours Display in the Detail table section
+            document.getElementById('current-total-hours').textContent = grandTotalHours.toFixed(0);
+
+            // Enable save button if the user is authenticated
+            if(userId) {
+                saveBtn.disabled = false;
+            }
+        }
+
+        /**
+         * Reads input fields, validates, and triggers the payroll calculation update.
+         */
+        function calculateNewEarnings() {
+            const ndInput = document.getElementById('ndHours');
+            const normalInput = document.getElementById('normalHours');
+            
+            const ndHours = parseFloat(ndInput.value) || 0;
+            const normalHours = parseFloat(normalInput.value) || 0;
+
+            if (ndHours < 0 || normalHours < 0) {
+                 const statusSpan = document.getElementById('save-status');
+                 statusSpan.textContent = "Error: Hours must be zero or positive.";
+                 setTimeout(() => statusSpan.textContent = "", 3000);
+                 return;
+            }
+            
+            // Perform the calculation and update the "Current Calculation" section
+            populateCurrentCalculation(ndHours, normalHours);
+        }
+        
+        /**
+         * Helper function to clear all user-input fields (UI reset).
+         * @param {string} message - Status message to display after clearing.
+         */
+        function _clearFormInputs(message) {
+            // 1. Clear Hours Input and set defaults
+            document.getElementById('ndHours').value = '0';
+            document.getElementById('normalHours').value = '0';
+            
+            // 2. Trigger calculation update (which updates the summary box with ₱0.00 Gross)
+            calculateNewEarnings();
+
+            // 3. Clear Expense Input Form and set defaults
+            document.getElementById('expenseCategory').value = ''; 
+            updateExpenseInputs(); 
+            document.getElementById('monthSelector').value = selectedMonthIndex; 
+
+            // 4. Clear status messages
+            document.getElementById('save-status').textContent = '';
+            document.getElementById('expense-status').textContent = '';
+            
+            // 5. Provide feedback on the main status area
+            const statusSpan = document.getElementById('save-status');
+            statusSpan.textContent = message;
+            statusSpan.classList.add('text-green-600');
+            
+            setTimeout(() => {
+                statusSpan.textContent = "";
+                statusSpan.classList.remove('text-green-600');
+            }, 4000);
+        }
+
+        // --- DELETION LOGIC (UNUSED BY NEW CLEAR INPUTS BUTTON) ---
+        
+        /**
+         * Deletes all expense documents from Firestore for the current user.
+         */
+        async function deleteAllExpenses() {
+            if (!db || !userId) {
+                _clearFormInputs("Inputs cleared, but failed to connect to database for deletion.");
+                return;
+            }
+            
+            const statusSpan = document.getElementById('save-status');
+            statusSpan.textContent = "Erasing all saved expenses... Please wait.";
+
+            try {
+                const expensesCollectionRef = collection(db, 
+                    `artifacts/${appId}/users/${userId}/user_expenses`
+                );
+                // Fetch all documents in the collection
+                const snapshot = await getDocs(expensesCollectionRef);
+                
+                const deletePromises = [];
+                snapshot.docs.forEach((d) => {
+                    // Collect deletion promises
+                    deletePromises.push(deleteDoc(doc(db, expensesCollectionRef.path, d.id)));
+                });
+
+                // Execute all deletions concurrently
+                await Promise.all(deletePromises);
+                
+                // The onSnapshot listener will handle the UI update
+                _clearFormInputs("All inputs and all saved expenses have been successfully cleared/erased.");
+
+            } catch (e) {
+                console.error("Error deleting all expenses: ", e);
+                _clearFormInputs("Error: Failed to erase all expenses. Check console.");
+            }
+        }
+
+        /**
+         * Primary function for the "Clear Inputs" button: now only clears the UI.
+         */
+        function clearInputs() {
+            // Only clear the UI inputs. Database deletion is now separate/removed from this action.
+            _clearFormInputs("All calculation inputs have been cleared.");
+        }
+
+        // The following functions related to the old confirmation modal are kept but no longer called by the UI.
+        function showConfirmationModal() { document.getElementById('confirmation-modal').classList.remove('hidden'); }
+        function hideConfirmationModal() { document.getElementById('confirmation-modal').classList.add('hidden'); }
+        async function confirmClearAndErase() {
+            hideConfirmationModal();
+            _clearFormInputs("Inputs cleared. Now erasing all saved expense records...");
+            await deleteAllExpenses();
+        }
+
+
+        // --- EXPENSE MANAGEMENT LOGIC ---
+
+        /**
+         * Renders the current list of expense records and updates the total.
+         */
+        function renderExpensesList() {
+            const expensesListDiv = document.getElementById('expenses-list');
+            expensesListDiv.innerHTML = ''; // Clear existing list
+
+            let calculatedTotal = 0;
+            
+            if (expenseRecords.length === 0) {
+                 expensesListDiv.innerHTML = '<p class="text-gray-500 italic">No cut off expenses saved. Add one below!</p>';
+                 // Ensure the total is 0 if list is empty
+                 totalExpenses = 0;
+            } else {
+                 // Render each expense item
+                 expenseRecords.forEach(record => {
+                    calculatedTotal += record.amount;
+                    
+                    let details = '';
+                    if (record.calculationDetails) {
+                         details = `<span class="text-xs text-gray-500 ml-2">(${record.calculationDetails.days} days @ ${formatCurrency(record.calculationDetails.rate)})</span>`;
+                    }
+
+                    let categoryText = record.category;
+                    // Show subcategory for Utilities
+                    if (record.category === 'Utilities' && record.subcategory) {
+                        categoryText = `Utilities: ${record.subcategory}`;
+                    }
+                    
+                    // Show the month the expense was recorded for
+                    const monthTag = record.monthName ? `<span class="text-xs font-semibold text-red-400 mr-2">[${record.monthName}]</span>` : '';
+
+
+                    const expenseItem = document.createElement('div');
+                    expenseItem.className = 'flex justify-between items-center bg-white p-3 rounded-lg shadow-sm border border-red-200 mb-2';
+                    expenseItem.innerHTML = `
+                        <div class="flex-grow">
+                            ${monthTag}
+                            <span class="font-medium text-gray-800">${categoryText}</span>
+                            ${details}
+                            <span class="ml-3 text-sm text-red-600 font-bold">${formatCurrency(record.amount)}</span>
+                        </div>
+                        <button onclick="deleteExpense('${record.id}')" class="text-red-400 hover:text-red-600 transition duration-150 ease-in-out ml-4">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                        </button>
+                    `;
+                    expensesListDiv.appendChild(expenseItem);
+                });
+            }
+
+            // Update global total and trigger net pay recalculation
+            totalExpenses = calculatedTotal;
+            document.getElementById('expenses-total').textContent = formatCurrency(totalExpenses);
+
+            // Important: Re-run payroll calculation using the new totalExpenses to update the Financial Summary box
+            calculateNewEarnings(); 
+        }
+
+        /**
+         * Calculates and displays the amount for Food/Transportation based on days.
+         */
+        function calculateSpecialExpense(category, rate) {
+            const daysInput = document.getElementById('daysInput');
+            const amountDisplay = document.getElementById('expenseAmountDisplay');
+            const finalAmountValue = document.getElementById('finalAmountValue');
+            
+            const days = parseInt(daysInput.value) || 0;
+            const amount = days * rate;
+            
+            amountDisplay.value = formatCurrency(amount);
+            finalAmountValue.value = amount;
+        }
+        
+        /**
+         * Utility function to create the manual amount input block.
+         */
+        const createManualAmountInput = (placeholderText = "e.g., 500.00") => {
+            return `
+                <div class="space-y-1">
+                    <label for="expenseAmountManual" class="block text-xs font-medium text-gray-700">Manual Amount</label>
+                    <input type="number" id="expenseAmountManual" min="0" step="0.01" class="w-full p-2 border border-red-300 rounded-lg text-sm" placeholder="${placeholderText}">
+                </div>
+            `;
+        };
+        
+        /**
+         * Shows the manual amount input when a utility subcategory is selected.
+         */
+        function updateUtilityAmountInput() {
+            const subcategorySelect = document.getElementById('utilitiesSubcategory');
+            const amountContainer = document.getElementById('utilityAmountInputContainer');
+            
+            if (subcategorySelect.value) {
+                // Use a descriptive placeholder text
+                amountContainer.innerHTML = createManualAmountInput(`e.g., 2500.00 for ${subcategorySelect.value}`);
+            } else {
+                amountContainer.innerHTML = '<p class="text-xs text-gray-500">Select a utility bill & account above to enter the amount.</p>';
+            }
+        }
+
+
+        /**
+         * Updates the expense input fields based on the selected category.
+         */
+        function updateExpenseInputs() {
+            const categorySelect = document.getElementById('expenseCategory');
+            const dynamicInputsDiv = document.getElementById('dynamic-expense-inputs');
+            const selectedCategory = categorySelect.value;
+            
+            dynamicInputsDiv.innerHTML = ''; // Clear existing inputs
+
+            if (selectedCategory === 'Food' || selectedCategory === 'Transportation') {
+                // Determine rate and display helper text
+                const rate = selectedCategory === 'Food' ? FOOD_RATE_PER_DAY : TRANSPORTATION_RATE_PER_DAY;
+                const helperText = selectedCategory === 'Food' ? `(₱${FOOD_RATE_PER_DAY}/day)` : `(₱${TRANSPORTATION_RATE_PER_DAY}/day)`;
+
+                // Show Days input and calculated Amount field
+                const inputHTML = `
+                    <div class="flex space-x-2">
+                        <div class="w-1/2 space-y-1">
+                            <label for="daysInput" class="block text-xs font-medium text-gray-700">Days of Work ${helperText}</label>
+                            <input type="number" id="daysInput" min="0" step="1" value="0" oninput="calculateSpecialExpense('${selectedCategory}', ${rate})" class="w-full p-3 border border-red-300 rounded-lg text-sm" placeholder="e.g., 20">
+                        </div>
+                        <div class="w-1/2 space-y-1">
+                            <label for="expenseAmountDisplay" class="block text-xs font-medium text-gray-700">Calculated Amount</label>
+                            <input type="text" id="expenseAmountDisplay" value="${formatCurrency(0)}" readonly class="w-full p-3 border border-red-300 rounded-lg text-sm bg-red-100 text-red-600 font-semibold">
+                            <input type="hidden" id="finalAmountValue" value="0">
+                        </div>
+                    </div>
+                `;
+                dynamicInputsDiv.innerHTML = inputHTML;
+                // Run initial calculation for a value of 0
+                calculateSpecialExpense(selectedCategory, rate);
+
+            } else if (selectedCategory === 'Utilities') {
+                // Utilities selected: Show subcategory selector first (Meralco/Maynilad - Joven Pio/Ellen Vivas)
+                dynamicInputsDiv.innerHTML = `
+                    <div class="space-y-3" id="utilitiesSubcategoryContainer">
+                        <select id="utilitiesSubcategory" onchange="updateUtilityAmountInput()" class="w-full p-3 border border-red-300 rounded-lg text-sm focus:ring-red-500">
+                            <option value="" disabled selected>Select Utility Bill & Account</option>
+                            <option value="Meralco - Joven Pio">Meralco - Joven Pio</option>
+                            <option value="Meralco - Ellen Vivas">Meralco - Ellen Vivas</option>
+                            <option value="Maynilad - Joven Pio">Maynilad - Joven Pio</option>
+                            <option value="Maynilad - Ellen Vivas">Maynilad - Ellen Vivas</option>
+                        </select>
+                        <div id="utilityAmountInputContainer">
+                            <p class="text-sm text-gray-500">Select a utility bill & account above to enter the amount.</p>
+                        </div>
+                    </div>
+                `;
+            } else if (selectedCategory) {
+                // Show manual Amount input for Rent, Other
+                dynamicInputsDiv.innerHTML = createManualAmountInput();
+            } else {
+                 dynamicInputsDiv.innerHTML = '<p class="text-sm text-gray-500">Select an expense category above.</p>';
+            }
+        }
+
+        /**
+         * Adds a new expense item to Firestore.
+         */
+        async function saveExpense() {
+            const categorySelect = document.getElementById('expenseCategory');
+            const statusSpan = document.getElementById('expense-status');
+
+            const category = categorySelect.value;
+            let amount;
+            let expenseData = { 
+                category: category, 
+                timestamp: serverTimestamp(),
+                monthIndex: selectedMonthIndex, // Save month index
+                monthName: monthNames[selectedMonthIndex] // Save month name
+            };
+
+            if (!db || !userId) {
+                statusSpan.textContent = "Error: Authentication required to save.";
+                return;
+            }
+            
+            if (!category) {
+                statusSpan.textContent = "Error: Please select a category.";
+                return;
+            }
+            
+            // Determine the amount based on category type
+            if (category === 'Food' || category === 'Transportation') {
+                const finalAmountValue = document.getElementById('finalAmountValue');
+                const daysInput = document.getElementById('daysInput');
+                
+                amount = parseFloat(finalAmountValue?.value) || 0;
+                const days = parseInt(daysInput?.value) || 0;
+                
+                if (days <= 0) {
+                     statusSpan.textContent = "Error: Days of Work must be positive for this category.";
+                     return;
+                }
+
+                // Attach calculation details
+                expenseData.amount = amount;
+                expenseData.calculationDetails = { 
+                    days: days, 
+                    rate: category === 'Food' ? FOOD_RATE_PER_DAY : TRANSPORTATION_RATE_PER_DAY 
+                };
+
+            } else { 
+                // Handles Rent, Utilities, Other (Manual input)
+                const amountInput = document.getElementById('expenseAmountManual');
+                amount = parseFloat(amountInput?.value) || 0;
+                expenseData.amount = amount;
+
+                // Check for Utilities subcategory
+                if (category === 'Utilities') {
+                    const subcategorySelect = document.getElementById('utilitiesSubcategory');
+                    const subcategory = subcategorySelect?.value;
+
+                    if (!subcategory) {
+                         statusSpan.textContent = "Error: Please select a utility bill subcategory.";
+                         return;
+                    }
+                    expenseData.subcategory = subcategory;
+                }
+            }
+
+
+            if (amount <= 0 || isNaN(amount)) {
+                statusSpan.textContent = `Error: Please enter a positive amount for ${category}.`;
+                return;
+            }
+            
+            statusSpan.textContent = "Saving expense...";
+
+            try {
+                const expensesCollectionRef = collection(db, 
+                    `artifacts/${appId}/users/${userId}/user_expenses`
+                );
+
+                await addDoc(expensesCollectionRef, expenseData);
+                
+                statusSpan.textContent = "Expense saved!";
+                // Reset the form after successful save
+                categorySelect.value = '';
+                updateExpenseInputs(); // Clear dynamic inputs
+                setTimeout(() => statusSpan.textContent = "", 3000);
+
+            } catch (e) {
+                console.error("Error adding expense: ", e);
+                statusSpan.textContent = "Expense save failed.";
+            }
+        }
+
+        /**
+         * Deletes an expense item from Firestore.
+         * @param {string} docId - The Firestore document ID of the expense.
+         */
+        async function deleteExpense(docId) {
+            if (!db || !userId) return;
+            
+            try {
+                const expenseDocRef = doc(db, 
+                    `artifacts/${appId}/users/${userId}/user_expenses`, docId
+                );
+                await deleteDoc(expenseDocRef);
+                // loadExpenses listener will automatically update the UI
+            } catch (e) {
+                console.error("Error deleting expense: ", e);
+            }
+        }
+
+        /**
+         * Sets up real-time listener for the user's expenses.
+         */
+        function loadExpenses() {
+             if (!db || !userId) return;
+
+             const expensesCollectionRef = collection(db, 
+                `artifacts/${appId}/users/${userId}/user_expenses`
+            );
+            
+            const q = query(expensesCollectionRef, orderBy("timestamp", "asc"));
+            
+            onSnapshot(q, (snapshot) => {
+                expenseRecords = []; // Clear current records
+                snapshot.docs.forEach((doc) => {
+                    // Store the document ID with the data for deletion purposes
+                    expenseRecords.push({ id: doc.id, ...doc.data() }); 
+                });
+                
+                renderExpensesList();
+            }, (error) => {
+                console.error("Error listening to expenses: ", error);
+            });
+        }
+
+        // --- FIREBASE HISTORY FUNCTIONS ---
+        
+        /**
+         * Saves the current payroll calculation result to Firestore.
+         */
+        async function saveCalculation() {
+            const saveBtn = document.getElementById('save-button');
+            const statusSpan = document.getElementById('save-status');
+            
+            if (!db || !userId || !currentCalculation) {
+                statusSpan.textContent = "Error: Database not ready or no calculation to save.";
+                return;
+            }
+
+            saveBtn.disabled = true;
+            statusSpan.textContent = "Saving...";
+
+            try {
+                const recordData = {
+                    ...currentCalculation,
+                    ndRate: ND_RATE_PER_HOUR,
+                    normalRate: NORMAL_RATE_PER_HOUR,
+                    timestamp: serverTimestamp() 
+                };
+
+                const recordsCollectionRef = collection(db, 
+                    `artifacts/${appId}/users/${userId}/payroll_records`
+                );
+
+                await addDoc(recordsCollectionRef, recordData);
+                
+                statusSpan.textContent = "Saved successfully!";
+                setTimeout(() => statusSpan.textContent = "", 3000);
+
+            } catch (e) {
+                console.error("Error adding document: ", e);
+                statusSpan.textContent = "Save failed. Check console for details.";
+            } finally {
+                saveBtn.disabled = false;
+            }
+        }
+
+        /**
+         * Sets up real-time listener for the calculation history.
+         */
+        function loadHistory() {
+            if (!db || !userId) {
+                console.warn("Database or User ID not ready for history load.");
+                document.getElementById('display-user-id').textContent = 'Authenticating...';
+                return;
+            }
+            
+            document.getElementById('display-user-id').textContent = userId;
+            
+            const recordsCollectionRef = collection(db, 
+                `artifacts/${appId}/users/${userId}/payroll_records`
+            );
+            
+            // Query to fetch records, ordered by latest first
+            const q = query(recordsCollectionRef, orderBy("timestamp", "desc"));
+            
+            const loadingHistoryP = document.getElementById('loading-history');
+            const historyListDiv = document.getElementById('history-list');
+            
+            onSnapshot(q, (snapshot) => {
+                loadingHistoryP.classList.add('hidden');
+                historyListDiv.innerHTML = '';
+                
+                if (snapshot.empty) {
+                    historyListDiv.innerHTML = '<p class="text-gray-500">No saved payroll records yet.</p>';
+                    return;
+                }
+
+                snapshot.docs.forEach((doc) => {
+                    const data = doc.data();
+                    const record = `
+                        <div class="bg-gray-100 p-4 rounded-lg shadow-sm border border-gray-200">
+                            <div class="flex justify-between items-center mb-2">
+                                <span class="text-sm font-medium text-gray-700">${formatDate(data.timestamp)}</span>
+                                <span class="text-2xl font-bold ${data.netPay >= 0 ? 'text-indigo-600' : 'text-red-600'}">${formatCurrency(data.netPay || data.grossEarnings || data.totalEarnings)}</span>
+                            </div>
+                            <p class="text-xs text-gray-500">
+                                Gross: ${formatCurrency(data.grossEarnings || data.totalEarnings)} | Expenses: ${formatCurrency(data.expenses || 0)} | JAFRA: ${formatCurrency(data.jafraCoopDeduction || 0)}
+                            </p>
+                        </div>
+                    `;
+                    historyListDiv.innerHTML += record;
+                });
+            }, (error) => {
+                console.error("Error listening to history: ", error);
+                loadingHistoryP.textContent = "Error loading history.";
+                loadingHistoryP.classList.remove('hidden');
+            });
+        }
+        
+        // --- FIREBASE INITIALIZATION ---
+
+        if (firebaseConfig) {
+            app = initializeApp(firebaseConfig);
+            db = getFirestore(app);
+            auth = getAuth(app);
+
+            onAuthStateChanged(auth, async (user) => {
+                if (user) {
+                    userId = user.uid;
+                    console.log("Authenticated user:", userId);
+                    
+                    // Load Expenses first, then history
+                    loadExpenses();
+                    loadHistory(); 
+                    
+                    // Re-run calculation to update save button status
+                    calculateNewEarnings(); 
+                } else {
+                    // Sign in anonymously if no token is available
+                    if (initialAuthToken) {
+                        try {
+                            await signInWithCustomToken(auth, initialAuthToken);
+                        } catch (error) {
+                            console.error("Custom token sign-in failed. Signing in anonymously.", error);
+                            await signInAnonymously(auth);
+                        }
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                }
+            });
+        }
+        
+        // --- INITIALIZATION ---
+        window.onload = () => {
+            // Set initial hours
+            const initialNDHours = 64;
+            const initialNormalHours = 30;
+            
+            document.getElementById('ndHours').value = initialNDHours;
+            document.getElementById('normalHours').value = initialNormalHours;
+            
+            // Set initial month
+            const currentMonthIndex = new Date().getMonth();
+            document.getElementById('monthSelector').value = currentMonthIndex;
+            
+            // Run initial setup
+            calculateNewEarnings();
+            updateExpenseInputs(); 
+            updateMonthLabel(); // Initialize dynamic month label
+        };
+
+        // Expose functions globally so the HTML onclick/oninput attributes can call them
+        window.calculateNewEarnings = calculateNewEarnings;
+        window.saveCalculation = saveCalculation;
+        window.saveExpense = saveExpense;
+        window.deleteExpense = deleteExpense;
+        window.updateExpenseInputs = updateExpenseInputs;
+        window.calculateSpecialExpense = calculateSpecialExpense;
+        window.updateUtilityAmountInput = updateUtilityAmountInput; 
+        window.clearInputs = clearInputs;
+        window.handleMonthChange = handleMonthChange;
+        
+        // Exposed functions related to the database deletion modal (kept but not used by UI)
+        window.confirmClearAndErase = confirmClearAndErase;
+        window.hideConfirmationModal = hideConfirmationModal;
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fb;
+        }
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #9ca3af;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #e5e7eb;
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-8">
+
+    <div class="max-w-4xl mx-auto bg-white shadow-xl rounded-xl p-6 md:p-10">
+        <header class="mb-8">
+            <h1 class="text-3xl font-extrabold text-gray-900 mb-2">Personal Finance Tracker</h1>
+            <p class="text-lg text-gray-600">Track your payroll and manage your cut off budget in real-time.</p>
+        </header>
+
+        <!-- New Unified Grid for All Interactive Elements (2x2 on desktop) -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-10">
+            
+            <!-- 1. Financial Summary & Fixed Rates (Top Left - COMBINED) -->
+            <section class="p-6 bg-indigo-50 rounded-lg border border-indigo-200 order-1 lg:order-1">
+                <h2 class="text-xl font-bold text-indigo-800 mb-4 flex items-center">
+                    <svg class="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c1.657 0 3 .895 3 2s-1.343 2-3 2h-2v4M7 12h4"></path></svg>
+                    Live Financial Summary
+                </h2>
+                
+                <!-- Financial Totals Block -->
+                <div class="space-y-3 p-3 bg-white rounded-lg shadow-inner mb-6">
+                    <!-- Net Pay (Most Important) -->
+                    <div class="flex justify-between items-center border-b border-indigo-200 pb-2">
+                        <p class="text-base font-bold text-gray-700">NET TAKE-HOME PAY</p>
+                        <p class="text-3xl font-extrabold text-indigo-700" id="current-net-earnings">₱0.00</p>
+                    </div>
+                    <!-- Gross Pay -->
+                    <div class="flex justify-between items-center">
+                        <p class="text-sm font-medium text-gray-500">Gross Pay Total</p>
+                        <p class="text-xl font-semibold text-green-600" id="current-gross-earnings">₱0.00</p>
+                    </div>
+                    <!-- JAFRA COOP Deduction -->
+                    <div class="flex justify-between items-center">
+                        <p class="text-sm font-medium text-gray-500">(-) JAFRA COOP Fee</p>
+                        <p class="text-xl font-semibold text-red-600">₱250.00</p>
+                    </div>
+                    <!-- Total Expenses -->
+                    <div class="flex justify-between items-center">
+                        <p class="text-sm font-medium text-gray-500">(-) Total Cut Off Expenses</p>
+                        <p class="text-xl font-semibold text-red-600" id="current-total-expenses">₱0.00</p>
+                    </div>
+                </div>
+
+                <h3 class="text-lg font-semibold text-indigo-700 mb-3">Fixed Hourly Rates</h3>
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="bg-white p-3 rounded-lg shadow-md">
+                        <p class="text-xs font-medium text-gray-500">Night Differential (ND)</p>
+                        <p class="text-xl font-semibold text-green-600">₱90.63<span class="text-sm font-normal text-gray-500">/hr</span></p>
+                    </div>
+                    <div class="bg-white p-3 rounded-lg shadow-md">
+                        <p class="text-xs font-medium text-gray-500">Normal Day Rate (NDR)</p>
+                        <p class="text-xl font-semibold text-blue-600">₱86.88<span class="text-sm font-normal text-gray-500">/hr</span></p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 2. Cut Off Expense Budget (Top Right) -->
+            <section class="p-6 bg-red-50 rounded-lg border border-red-200 order-4 lg:order-2">
+                <h2 class="text-xl font-bold text-red-800 mb-4 flex items-center">
+                    <svg class="w-6 h-6 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2z"></path></svg>
+                    <span id="expenses-header-title">Cut Off Expenses</span>
+                </h2>
+                
+                <!-- Month Selector -->
+                <div class="mb-4">
+                    <label for="monthSelector" class="block text-sm font-medium text-gray-700 mb-1">Select Expense Month</label>
+                    <select id="monthSelector" onchange="handleMonthChange()" class="w-full p-3 border border-gray-300 rounded-lg text-sm focus:ring-red-500">
+                        <option value="0">January</option>
+                        <option value="1">February</option>
+                        <option value="2">March</option>
+                        <option value="3">April</option>
+                        <option value="4">May</option>
+                        <option value="5">June</option>
+                        <option value="6">July</option>
+                        <option value="7">August</option>
+                        <option value="8">September</option>
+                        <option value="9">October</option>
+                        <option value="10">November</option>
+                        <option value="11">December</option>
+                    </select>
+                </div>
+
+                <div class="h-40 overflow-y-auto mb-4 border border-red-300 p-2 rounded-lg" id="expenses-list">
+                    <p class="text-gray-500 italic">Loading expenses...</p>
+                </div>
+                <div class="flex justify-between pt-2 border-t border-red-300 mb-4">
+                    <span class="font-bold text-red-700">TOTAL CUT OFF EXPENSES:</span>
+                    <span class="text-xl font-extrabold text-red-700" id="expenses-total">₱0.00</span>
+                </div>
+                
+                <!-- New Expense Input (DYNAMIC FORM) -->
+                <div class="space-y-3 mt-4">
+                    <h3 class="font-semibold text-red-700">Add New Expense:</h3>
+                    
+                    <!-- Category Selector -->
+                    <select id="expenseCategory" onchange="updateExpenseInputs()" class="w-full p-3 border border-red-300 rounded-lg text-sm focus:ring-red-500">
+                        <option value="" disabled selected>Select Category</option>
+                        <option value="Food">Food (₱40/day)</option>
+                        <option value="Transportation">Transportation (₱30/day)</option>
+                        <option value="Rent">Rent</option>
+                        <option value="Utilities">Utilities (Meralco/Maynilad)</option>
+                        <option value="Other">Other (Manual Amount)</option>
+                    </select>
+                    
+                    <!-- Dynamic Inputs Container -->
+                    <div id="dynamic-expense-inputs" class="space-y-2">
+                        <p class="text-sm text-gray-500">Select an expense category above.</p>
+                    </div>
+                    
+                    <button onclick="saveExpense()" class="w-full px-4 py-2 text-base font-medium rounded-lg text-white bg-red-600 hover:bg-red-700 transition duration-150 shadow-sm">
+                        Add Expense
+                    </button>
+                    <span id="expense-status" class="block text-sm text-red-500 text-center pt-1"></span>
+                </div>
+            </section>
+
+            <!-- 3. Interactive Calculator Section (Input Hours) (Bottom Left) -->
+            <section id="input-hours-section" class="p-6 bg-gray-50 rounded-lg border border-gray-200 order-2 lg:order-3">
+                <h2 class="text-xl font-bold text-gray-900 mb-4 flex items-center">
+                    <svg class="w-6 h-6 mr-2 text-indigo-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-10 3h10a2 2 0 002-2V5a2 2 0 00-2-2H9a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
+                    Input Hours
+                </h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <!-- Night Differential Input -->
+                    <div class="space-y-2">
+                        <label for="ndHours" class="block text-sm font-medium text-gray-700">Night Differential Hours (ND)</label>
+                        <input type="number" id="ndHours" value="64" min="0" step="1" oninput="calculateNewEarnings()" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 shadow-sm">
+                    </div>
+
+                    <!-- Normal Days Input -->
+                    <div class="space-y-2">
+                        <label for="normalHours" class="block text-sm font-medium text-gray-700">Normal Days Hours (NDR)</label>
+                        <input type="number" id="normalHours" value="30" min="0" step="1" oninput="calculateNewEarnings()" class="w-full p-3 border border-gray-300 rounded-lg focus:ring-indigo-500 focus:border-indigo-500 shadow-sm">
+                    </div>
+                </div>
+                
+                <div class="mt-6 flex flex-col md:flex-row gap-4">
+                    <button onclick="calculateNewEarnings()" class="w-full md:w-auto px-6 py-3 border border-transparent text-base font-medium rounded-lg shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition duration-150 ease-in-out">
+                        Update Pay Calculation
+                    </button>
+                    <!-- CLEAR INPUTS BUTTON - NOW ONLY CLEARS INPUTS -->
+                    <button onclick="clearInputs()" class="w-full md:w-auto px-6 py-3 border border-gray-300 text-base font-medium rounded-lg shadow-sm text-gray-700 bg-white hover:bg-gray-100 transition duration-150 ease-in-out">
+                        Clear Inputs
+                    </button>
+                </div>
+            </section>
+
+            <!-- 4. Current Calculation Details (Bottom Right) -->
+            <section class="p-6 bg-white border border-gray-200 rounded-lg shadow-sm order-3 lg:order-4">
+                <h2 class="text-2xl font-semibold text-gray-900 mb-4">Hourly Earnings Breakdown</h2>
+                <div class="overflow-x-auto mb-4">
+                    <!-- Gross Pay Table (Now detail-focused) -->
+                    <table class="min-w-full bg-white border border-gray-200 rounded-lg">
+                        <thead>
+                            <tr class="bg-gray-100 text-left text-sm font-medium text-gray-500 uppercase tracking-wider border-b">
+                                <th class="p-3">Category</th>
+                                <th class="p-3 text-right">Hours Worked</th>
+                                <th class="p-3 text-right">Rate/Hour</th>
+                                <th class="p-3 text-right">Earnings</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-gray-200" id="current-calculation-body">
+                            <!-- Payroll Data will be populated here -->
+                        </tbody>
+                        <tfoot>
+                            <!-- Total Hours Row is the only remaining summary row -->
+                            <tr class="bg-gray-50 font-bold text-gray-700">
+                                <td class="p-3">TOTAL HOURS CALCULATED</td>
+                                <td class="p-3 text-right" id="current-total-hours">0</td>
+                                <td class="p-3 text-right" colspan="2"></td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+                <button onclick="saveCalculation()" id="save-button" class="mt-4 px-6 py-3 border border-transparent text-base font-medium rounded-lg shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition duration-150 ease-in-out disabled:opacity-50" disabled>
+                    Save Current Net Pay Record
+                </button>
+                <span id="save-status" class="ml-4 text-sm font-medium text-gray-500"></span>
+            </section>
+        </div>
+        <!-- End Unified Grid -->
+
+
+        <!-- Calculation History Section -->
+        <section class="p-6 bg-white border border-gray-200 rounded-lg shadow-sm">
+            <h2 class="text-2xl font-semibold text-gray-900 mb-4 flex items-center">
+                <svg class="w-6 h-6 mr-2 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                Net Pay History (Saved Records)
+            </h2>
+            <div id="history-container" class="space-y-4">
+                <p id="loading-history" class="text-gray-500">Loading history...</p>
+                <div id="history-list">
+                    <!-- History records will be injected here -->
+                </div>
+            </div>
+            <p class="text-xs text-gray-400 mt-4">User ID: <span id="display-user-id">Loading...</span></p>
+        </section>
+
+    </div>
+    
+    <!-- NOTE: The confirmation modal HTML has been removed as it is no longer needed for the "Clear Inputs" functionality. -->
+</body>
+</html>
