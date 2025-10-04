@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payroll & Expenses Calculator</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 15px;
+            background: #f4f6f9;
+        }
+        h1, h2, h3 {
+            text-align: center;
+        }
+        .box {
+            background: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            max-width: 500px;
+            margin: auto;
+        }
+        label {
+            display: block;
+            margin-top: 10px;
+            font-weight: bold;
+        }
+        input, select, button {
+            width: 100%;
+            padding: 8px;
+            margin-top: 5px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            margin-top: 15px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .result {
+            max-width: 500px;
+            margin: 20px auto;
+            padding: 15px;
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .balance {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: green;
+            text-align: center;
+        }
+        ul {
+            padding-left: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Payroll & Expenses Calculator</h1>
+    <div class="box">
+        <label>Cutoff:</label>
+        <select id="cutoff">
+            <option value="1-15">1-15</option>
+            <option value="16-30">16-30</option>
+        </select>
+
+        <label>Night Hours:</label>
+        <input type="number" id="night_hours" step="0.01" required>
+
+        <label>Morning Hours:</label>
+        <input type="number" id="morning_hours" step="0.01" required>
+
+        <label>Food Days:</label>
+        <input type="number" id="food_days" required>
+
+        <label>Transport Days:</label>
+        <input type="number" id="transport_days" required>
+
+        <h3>Other Expenses</h3>
+        <label>Meralco:</label>
+        <input type="number" id="meralco" step="0.01" value="0">
+
+        <label>Maynilad:</label>
+        <input type="number" id="maynilad" step="0.01" value="0">
+
+        <label>Shopee:</label>
+        <input type="number" id="shopee" step="0.01" value="0">
+
+        <label>Lazada:</label>
+        <input type="number" id="lazada" step="0.01" value="0">
+
+        <label>TikTok:</label>
+        <input type="number" id="tiktok" step="0.01" value="0">
+
+        <label>Others:</label>
+        <input type="number" id="others" step="0.01" value="0">
+
+        <button onclick="compute()">Compute</button>
+    </div>
+
+    <div id="result" class="result" style="display:none;"></div>
+
+    <script>
+        function compute() {
+            // Pay rates
+            const night_rate = 725 / 8; 
+            const morning_rate = 695 / 8;
+            const food_rate = 40;
+            const transport_rate = 30;
+
+            // Get inputs
+            let cutoff = document.getElementById("cutoff").value;
+            let night_hours = parseFloat(document.getElementById("night_hours").value) || 0;
+            let morning_hours = parseFloat(document.getElementById("morning_hours").value) || 0;
+            let food_days = parseInt(document.getElementById("food_days").value) || 0;
+            let transport_days = parseInt(document.getElementById("transport_days").value) || 0;
+
+            let meralco = parseFloat(document.getElementById("meralco").value) || 0;
+            let maynilad = parseFloat(document.getElementById("maynilad").value) || 0;
+            let shopee = parseFloat(document.getElementById("shopee").value) || 0;
+            let lazada = parseFloat(document.getElementById("lazada").value) || 0;
+            let tiktok = parseFloat(document.getElementById("tiktok").value) || 0;
+            let others = parseFloat(document.getElementById("others").value) || 0;
+
+            // Payroll computation
+            let night_pay = night_hours * night_rate;
+            let morning_pay = morning_hours * morning_rate;
+            let gross = night_pay + morning_pay;
+
+            // Deductions
+            let jafra = 250;
+            let sss = 0, pagibig = 0, philhealth = 0;
+
+            if (cutoff === "1-15") {
+                sss = 630;
+                pagibig = 200;
+                philhealth = 420.59;
+            }
+            // total deductions
+            let total_deductions = jafra + sss + pagibig + philhealth;
+
+            let net = gross - total_deductions;
+
+            // Expenses
+            let food = food_days * food_rate;
+            let transport = transport_days * transport_rate;
+            let total_expenses = food + transport + meralco + maynilad + shopee + lazada + tiktok + others;
+
+            // Balance
+            let balance = net - total_expenses;
+
+            // Display results
+            let output = `
+                <h2>Results</h2>
+                <p><b>Gross Pay:</b> ₱${gross.toFixed(2)}</p>
+                <h3>Deductions</h3>
+                <ul>
+                    <li>Jafra Coop: ₱${jafra.toFixed(2)}</li>
+                    <li>SSS: ₱${sss.toFixed(2)}</li>
+                    <li>Pag-IBIG: ₱${pagibig.toFixed(2)}</li>
+                    <li>PhilHealth: ₱${philhealth.toFixed(2)}</li>
+                </ul>
+                <p><b>Total Deductions:</b> ₱${total_deductions.toFixed(2)}</p>
+                <p><b>Net Pay:</b> ₱${net.toFixed(2)}</p>
+
+                <h3>Expenses</h3>
+                <ul>
+                    <li>Food: ₱${food.toFixed(2)}</li>
+                    <li>Transport: ₱${transport.toFixed(2)}</li>
+                    <li>Meralco: ₱${meralco.toFixed(2)}</li>
+                    <li>Maynilad: ₱${maynilad.toFixed(2)}</li>
+                    <li>Shopee: ₱${shopee.toFixed(2)}</li>
+                    <li>Lazada: ₱${lazada.toFixed(2)}</li>
+                    <li>TikTok: ₱${tiktok.toFixed(2)}</li>
+                    <li>Others: ₱${others.toFixed(2)}</li>
+                </ul>
+                <p><b>Total Expenses:</b> ₱${total_expenses.toFixed(2)}</p>
+                <p class="balance">Balance: ₱${balance.toFixed(2)}</p>
+            `;
+
+            document.getElementById("result").innerHTML = output;
+            document.getElementById("result").style.display = "block";
+        }
+    </script>
+</body>
+</html>
