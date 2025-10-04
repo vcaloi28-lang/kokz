@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Payroll & Expenses Calculator</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    margin: 10px;
+    padding: 0;
+    max-width: 100%;
+  }
+  label {
+    display: inline-block;
+    width: 100%;
+    margin-bottom: 5px;
+  }
+  input, select, button {
+    width: 100%;
+    margin-bottom: 10px;
+    padding: 8px;
+    box-sizing: border-box;
+  }
+  h2, h3 {
+    margin-top: 20px;
+    border-bottom: 2px solid #000;
+    padding-bottom: 5px;
+  }
+  .expense {
+    margin-bottom: 8px;
+  }
+  pre {
+    background: #f3f3f3;
+    padding: 10px;
+    border-radius: 5px;
+    white-space: pre-wrap;
+    font-size: 16px;
+  }
+  @media screen and (min-width: 480px){
+    label { width: 220px; display: inline-block; }
+    input, select, button { width: calc(100% - 230px); display: inline-block; }
+  }
+</style>
+</head>
+<body>
+
+<h2>Payroll & Expenses Calculator</h2>
+
+<label for="cutoff">Cutoff:</label>
+<select id="cutoff" onchange="updateDeductionsLabel()">
+  <option value="1">1 - 15</option>
+  <option value="2">16 - 30</option>
+</select><br>
+
+<h3>Work Hours</h3>
+<label for="nightHours">Night Differential Hours (₱725/8 hrs):</label>
+<input type="number" id="nightHours" placeholder="Hours worked"><br>
+
+<label for="morningHours">Morning Shift Hours (₱695/8 hrs):</label>
+<input type="number" id="morningHours" placeholder="Hours worked"><br>
+
+<h3>Fixed Deductions</h3>
+<label>SSS:</label> <input type="text" value="₱630" readonly><br>
+<label>PhilHealth:</label> <input type="text" value="₱420.59" readonly><br>
+<label>Pag-IBIG:</label> <input type="text" value="₱200" readonly><br>
+<label>Jafra Coop:</label> <input type="text" value="₱250" readonly><br>
+<p><strong>Deductions Applicable:</strong> <span id="deductionsLabel">Jafra Coop</span></p>
+
+<h2>Expenses</h2>
+<div class="expense">
+  <label for="foodDays">Food (₱40/day):</label>
+  <input type="number" id="foodDays" placeholder="Days worked"> days
+</div>
+<div class="expense">
+  <label for="transportDays">Transportation (₱30/day):</label>
+  <input type="number" id="transportDays" placeholder="Days worked"> days
+</div>
+<div class="expense">
+  <label for="meralcoJoven">Meralco - Joven Pio:</label>
+  <input type="number" id="meralcoJoven" placeholder="₱ amount">
+</div>
+<div class="expense">
+  <label for="meralcoEllen">Meralco - Ellen Vivas:</label>
+  <input type="number" id="meralcoEllen" placeholder="₱ amount">
+</div>
+<div class="expense">
+  <label for="maynilad">Maynilad:</label>
+  <input type="number" id="maynilad" placeholder="₱ amount">
+</div>
+<div class="expense">
+  <label for="shopee">Shopee:</label>
+  <input type="number" id="shopee" placeholder="₱ amount">
+</div>
+<div class="expense">
+  <label for="lazada">Lazada:</label>
+  <input type="number" id="lazada" placeholder="₱ amount">
+</div>
+<div class="expense">
+  <label for="tiktok">TikTok:</label>
+  <input type="number" id="tiktok" placeholder="₱ amount">
+</div>
+
+<div id="extraExpenses"></div>
+<button type="button" onclick="addExpense()">+ Add Other Expense</button>
+<br><br>
+
+<button onclick="calculateNet()">Calculate Net Pay</button>
+
+<h2>Result</h2>
+<pre id="result"></pre>
+
+<script>
+let extraCount = 0;
+
+function addExpense() {
+  extraCount++;
+  let container = document.getElementById("extraExpenses");
+  let div = document.createElement("div");
+  div.className = "expense";
+  div.innerHTML = `
+    <label for="extraName${extraCount}">Expense Name:</label>
+    <input type="text" id="extraName${extraCount}" placeholder="Expense name">
+    <input type="number" id="extra${extraCount}" placeholder="₱ amount">
+  `;
+  container.appendChild(div);
+}
+
+function updateDeductionsLabel() {
+  let cutoff = document.getElementById("cutoff").value;
+  let deductionsLabel = document.getElementById("deductionsLabel");
+  deductionsLabel.innerText = cutoff == "1" ? "Jafra Coop" : "SSS, PhilHealth, Pag-IBIG, Jafra Coop";
+}
+
+function calculateNet() {
+  let cutoff = document.getElementById("cutoff").value;
+
+  // Work hours
+  let nightHours = parseFloat(document.getElementById("nightHours").value) || 0;
+  let morningHours = parseFloat(document.getElementById("morningHours").value) || 0;
+
+  // Rates
+  let nightRate = 725 / 8;
+  let morningRate = 695 / 8;
+
+  let nightPay = nightHours * nightRate;
+  let morningPay = morningHours * morningRate;
+  let gross = nightPay + morningPay;
+
+  // Deductions
+  let sss = 630, philhealth = 420.59, pagibig = 200, jafra = 250;
+  let deductionsBreakdown = "";
+  let deductionsTotal = 0;
+  if (cutoff == "1") {
+    deductionsTotal = jafra;
+    deductionsBreakdown = `**Jafra Coop: ₱${jafra.toFixed(2)}**`;
+  } else {
+    deductionsTotal = sss + philhealth + pagibig + jafra;
+    deductionsBreakdown = `**SSS: ₱${sss.toFixed(2)}**\n**PhilHealth: ₱${philhealth.toFixed(2)}**\n**Pag-IBIG: ₱${pagibig.toFixed(2)}**\n**Jafra Coop: ₱${jafra.toFixed(2)}**`;
+  }
+
+  // Expenses
+  let foodDays = parseInt(document.getElementById("foodDays").value) || 0;
+  let transportDays = parseInt(document.getElementById("transportDays").value) || 0;
+  let food = foodDays * 40;
+  let transport = transportDays * 30;
+
+  let meralcoJoven = parseFloat(document.getElementById("meralcoJoven").value) || 0;
+  let meralcoEllen = parseFloat(document.getElementById("meralcoEllen").value) || 0;
+  let maynilad = parseFloat(document.getElementById("maynilad").value) || 0;
+  let shopee = parseFloat(document.getElementById("shopee").value) || 0;
+  let lazada = parseFloat(document.getElementById("lazada").value) || 0;
+  let tiktok = parseFloat(document.getElementById("tiktok").value) || 0;
+
+  let extrasBreakdown = "";
+  let extrasTotal = 0;
+  for (let i=1;i<=extraCount;i++){
+    let name = document.getElementById("extraName"+i).value || `Other Expense ${i}`;
+    let val = parseFloat(document.getElementById("extra"+i).value) || 0;
+    extrasBreakdown += `${name}: ₱${val.toFixed(2)}\n`;
+    extrasTotal += val;
+  }
+
+  let expensesBreakdown =
+    `Food (${foodDays} days x ₱40): ₱${food.toFixed(2)}\n` +
+    `Transportation (${transportDays} days x ₱30): ₱${transport.toFixed(2)}\n` +
+    `Meralco - Joven Pio: ₱${meralcoJoven.toFixed(2)}\n` +
+    `Meralco - Ellen Vivas: ₱${meralcoEllen.toFixed(2)}\n` +
+    `Maynilad: ₱${maynilad.toFixed(2)}\n` +
+    `Shopee: ₱${shopee.toFixed(2)}\n` +
+    `Lazada: ₱${lazada.toFixed(2)}\n` +
+    `TikTok: ₱${tiktok.toFixed(2)}\n` +
+    extrasBreakdown;
+
+  let expensesTotal = food + transport + meralcoJoven + meralcoEllen + maynilad + shopee + lazada + tiktok + extrasTotal;
+  let net = gross - deductionsTotal - expensesTotal;
+
+  document.getElementById("result").innerText =
+`Gross Pay:
+Night Differential: ₱${nightPay.toFixed(2)} (${nightHours} hrs x ₱${nightRate.toFixed(2)})
+Morning Shift: ₱${morningPay.toFixed(2)} (${morningHours} hrs x ₱${morningRate.toFixed(2)})
+Total Gross: ₱${gross.toFixed(2)}
+
+Deductions:
+${deductionsBreakdown}
+Total Deductions: ₱${deductionsTotal.toFixed(2)}
+
+Expenses:
+${expensesBreakdown}Total Expenses: ₱${expensesTotal.toFixed(2)}
+
+Net Pay After Expenses: ₱${net.toFixed(2)}`;
+}
+
+// Initialize label on load
+updateDeductionsLabel();
+</script>
+</body>
+</html>
